@@ -8,4 +8,4 @@
 
 ##iptables setting
 
-``` iptables -A OUTPUT -p tcp --dport 80 -j NFQUEUE ```
+``` iptables -A OUTPUT -p tcp -j NFQUEUE --queue-num 0 ```
