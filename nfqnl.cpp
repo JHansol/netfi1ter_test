@@ -12,14 +12,112 @@
 #include <list>
 #include <libnet.h>
 #include <libnetfilter_queue/libnetfilter_queue.h>
+#include <cstdio>
+#include <queue>
+#include <map>
 
 #define buf_size 256
 #define packet_size 1486
 
 int get_par_content(char *buf, char* result);
-
+void packet_show(const unsigned char* packet, int len);
 using namespace std;
+struct Trie {
+	map<int, Trie*> go2;
+	Trie *fail;
+	bool output;
+
+	Trie() {
+		output = false;
+	}
+	~Trie() {
+		if (go2.size() > 0)
+		{
+			for (map<int, Trie*>::iterator it = go2.begin(); it != go2.end(); it++)
+			{
+				delete it->second;
+			}
+			go2.clear();
+		}
+	}
+	void insert(char* key) {
+		if (*key == '\0') {
+			output = true;
+			return;
+		}
+		if (!go2.count(*key)) {   // KEY가 없을 경우 추가 시킴 , O(log(n))
+			go2[*key] = new Trie; // pair(key, Trie) 로 추가
+		}
+		go2[*key]->insert(key + 1);
+	}
+};
+
 list<char*> block_list;
+Trie* root;
+
+void Tire_setting(Trie* root) {
+	// 트라이에(root) 원소들을 모두 집어넣는다.
+	root->fail = root;  // 초기세팅
+
+	list <char*>::iterator c1_Iter; // 리스트 탐색용 변수
+	for (c1_Iter = block_list.begin(); c1_Iter != block_list.end(); ++c1_Iter) {
+		printf("%s",*c1_Iter);
+		root->insert(*c1_Iter);
+	}
+	//root->insert("aad");
+	//root->insert("한글");
+
+	queue<Trie*> queue;
+	queue.push(root);
+	while (!queue.empty()) { // 큐가 empty 까지 반복
+		Trie *current = queue.front();
+		queue.pop();
+
+		map<int, Trie*>::iterator iter;
+		for (iter = current->go2.begin(); iter != current->go2.end(); ++iter) {
+			int key = (*iter).first;
+			Trie *next = (*iter).second;
+
+			if (current == root) next->fail = root; // root ----fail----> root
+			else {
+				Trie *dest = current->fail;          
+				while (dest != root && !dest->go2.count(key)) 
+					dest = dest->fail;               
+				if (dest->go2.count(key)) dest = dest->go2.at(key); 
+				next->fail = dest;                   
+			}
+			if (next->fail->output) next->output = true; // exam : a->a, a->a->a 일경우 끝 노드에게 output = true 
+
+			queue.push(next);
+		}
+	}
+}
+
+bool aho_corasick_search(char *packet_data,int len){
+    Trie* current = root;
+    bool result = false;
+
+    for (int c = 0; c<len; c++) { // 전체 String 글자 수 만큼 반복
+        int key = packet_data[c];
+
+        while (current != root && !current->go2.count(key)){ // 현재 노드에서 갈 수 없으면 fail을 계속 따라감
+            current = current->fail;       // 다시 root 또는 이전 노드를 향해
+	}
+
+        if (current->go2.count(key)){                        // go 함수가 존재하면 이동. 루트면 이게 false일 수도 있다
+            current = current->go2.at(key);
+	}
+
+        if (current->output) {  // 현재 노드에 output이 있으면 찾은 것이다.
+	    for(int m=11;m>=0;m--)
+	        printf("%c", packet_data[c-m]);
+	    printf(" - ");
+            result = true;
+            break;
+        }
+    }
+	return result;
+}
 
 void block_set(list<char*>* block_list) {
 	FILE *fd;
@@ -199,17 +297,20 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	len = nfq_get_payload(nfa, &packet_data);
 	//protocol = ntohs(header->hw_protocol);
 
-	check = header_check(header, packet_data, ETHERTYPE_IP, IPPROTO_TCP,80);
+	check = header_check(header, packet_data, ETHERTYPE_IP, IPPROTO_TCP, 80);
 	//if (header_check(header, packet_data, ETHERTYPE_IP, IPPROTO_TCP,80) == true) // tcp check
 	//	check = true;
 
-	if(check == true){ // 80port[HTTP]
-		string s_data(reinterpret_cast<char const *>(packet_data), len); // string 객체에 담기
-		for (c1_Iter = block_list.begin(); c1_Iter != block_list.end(); ++c1_Iter) {
-			if (s_data.find((string)*c1_Iter) != string::npos) {
-				printf("[ %s ] block. \n", *c1_Iter);
-				return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-			}
+	if (check == true) { // 80port[HTTP]
+		if (aho_corasick_search ( (char*)packet_data, len )) {
+			printf("block. \n");
+			return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+		//string s_data(reinterpret_cast<char const *>(packet_data), len); // string 객체에 담기
+		//for (c1_Iter = block_list.begin(); c1_Iter != block_list.end(); ++c1_Iter) {
+		//	if (s_data.find((string)*c1_Iter) != string::npos) {
+		//		printf("[ %s ] block. \n", *c1_Iter);
+		//		return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+		//	}
 		}
 	}
 	return nfq_set_verdict(qh, id, NF_ACCEPT, len, packet_data);
@@ -232,6 +333,9 @@ int main(int argc, char **argv)
 	int rv;
 	char buf[4096] __attribute__((aligned));
 	block_set(&block_list);
+
+	root = new Trie;
+	Tire_setting(root);
 
 	printf("opening library handle\n");
 	h = nfq_open();
